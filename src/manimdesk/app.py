@@ -19,11 +19,8 @@ from .core import (
     QUALITIES,
     RenderJob,
     clean_log_line,
-    default_workspace,
     error_summary,
     find_scenes,
-    latex_installed,
-    manim_installed,
     new_videos,
     open_path,
     prepare_render,
@@ -31,6 +28,14 @@ from .core import (
     resolution,
     start_render,
 )
+from .environment import (
+    Environment,
+    active_environment,
+    default_video_dir,
+    default_workspace,
+    kill_tree,
+)
+from .installer import InstallerWindow
 
 SAMPLE_SCRIPT = '''from manim import *
 
@@ -57,7 +62,7 @@ class ManimDesk(tk.Tk):
         self.geometry("1200x780")
         self.minsize(900, 580)
 
-        self.workspace = default_workspace()
+        self.env: Environment | None = active_environment()
         self.process = None
         self.job: RenderJob | None = None
         self.render_start = 0.0
@@ -68,6 +73,8 @@ class ManimDesk(tk.Tk):
         style = ttk.Style(self)
         if "clam" in style.theme_names():
             style.theme_use("clam")
+        # clam's default bar is almost the same grey as its trough.
+        style.configure("Horizontal.TProgressbar", background="#3b82f6", troughcolor="#e4e4e4")
         self.mono = font.nametofont("TkFixedFont").copy()
         self.mono.configure(size=11)
         self.heading = font.nametofont("TkDefaultFont").copy()
@@ -77,6 +84,15 @@ class ManimDesk(tk.Tk):
         self.editor.insert("1.0", SAMPLE_SCRIPT)
         self.editor.edit_reset()
         self.refresh_scenes()
+        self._show_env()
+        if self.env is None:
+            self.log_write(
+                "Welcome to ManimDesk!\n\n"
+                "Before making your first video, click\n"
+                "\"Install Requirements…\" to download\n"
+                "Python, Manim and LaTeX.\n",
+                "warn",
+            )
         self.after(100, self._drain_log)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -114,39 +130,52 @@ class ManimDesk(tk.Tk):
         ttk.Label(opts, text="Scene:").grid(row=0, column=0, sticky="w", pady=3)
         self.scene_var = tk.StringVar()
         self.scene_box = ttk.Combobox(opts, textvariable=self.scene_var, state="readonly")
-        self.scene_box.grid(row=0, column=1, columnspan=3, sticky="ew", pady=3)
+        self.scene_box.grid(row=0, column=1, columnspan=4, sticky="ew", pady=3)
 
         ttk.Label(opts, text="Quality:").grid(row=1, column=0, sticky="w", pady=3)
         self.quality_var = tk.StringVar(value=list(QUALITIES)[1])
-        for i, label in enumerate(QUALITIES):
-            ttk.Radiobutton(opts, text=label, value=label, variable=self.quality_var).grid(
-                row=1, column=1 + i, sticky="w", padx=(0, 12)
+        choices = ttk.Frame(opts)
+        choices.grid(row=1, column=1, columnspan=4, sticky="w")
+        for label in QUALITIES:
+            ttk.Radiobutton(choices, text=label, value=label, variable=self.quality_var).pack(
+                side=tk.LEFT, padx=(0, 12)
             )
 
         ttk.Label(opts, text="Aspect ratio:").grid(row=2, column=0, sticky="w", pady=3)
         self.aspect_var = tk.StringVar(value=ASPECTS[0])
-        for i, label in enumerate(ASPECTS):
-            ttk.Radiobutton(opts, text=label, value=label, variable=self.aspect_var).grid(
-                row=2, column=1 + i, sticky="w", padx=(0, 12)
+        choices = ttk.Frame(opts)
+        choices.grid(row=2, column=1, columnspan=4, sticky="w")
+        for label in ASPECTS:
+            ttk.Radiobutton(choices, text=label, value=label, variable=self.aspect_var).pack(
+                side=tk.LEFT, padx=(0, 12)
             )
 
         ttk.Label(opts, text="Save to:").grid(row=3, column=0, sticky="w", pady=3)
-        self.output_var = tk.StringVar(value=pretty_path(self.workspace / "output"))
+        self.output_var = tk.StringVar(value=pretty_path(default_video_dir()))
         ttk.Entry(opts, textvariable=self.output_var).grid(
             row=3, column=1, columnspan=3, sticky="ew", pady=3
         )
         ttk.Button(opts, text="Browse…", command=self.choose_output).grid(
-            row=3, column=4, padx=(6, 0)
+            row=3, column=4, padx=(6, 0), sticky="ew"
         )
 
+        ttk.Label(opts, text="Requirements:").grid(row=4, column=0, sticky="w", pady=3)
+        self.env_var = tk.StringVar()
+        self.env_label = ttk.Label(opts, textvariable=self.env_var)
+        self.env_label.grid(row=4, column=1, columnspan=3, sticky="w", pady=3)
+        self.install_btn = ttk.Button(
+            opts, text="Install Requirements…", command=self.open_installer
+        )
+        self.install_btn.grid(row=4, column=4, padx=(6, 0), sticky="ew")
+
         btns = ttk.Frame(opts)
-        btns.grid(row=4, column=0, columnspan=5, sticky="ew", pady=(10, 0))
+        btns.grid(row=5, column=0, columnspan=5, sticky="ew", pady=(10, 0))
         self.render_btn = ttk.Button(btns, text="▶  Render", command=self.render)
         self.render_btn.pack(side=tk.LEFT)
         self.stop_btn = ttk.Button(btns, text="■  Stop", command=self.stop, state=tk.DISABLED)
         self.stop_btn.pack(side=tk.LEFT, padx=6)
+        # Shown only while rendering.
         self.progress = ttk.Progressbar(btns, mode="indeterminate", length=160)
-        self.progress.pack(side=tk.LEFT, padx=6)
 
         # Log / output
         ttk.Label(right, text="Render log", font=self.heading).pack(anchor="w")
@@ -270,12 +299,13 @@ class ManimDesk(tk.Tk):
         self.log.configure(state=tk.DISABLED)
 
     def render(self):
-        if not manim_installed():
-            messagebox.showerror(
-                "Manim not found",
-                "Manim isn't installed for this Python:\n"
-                f"{sys.executable}\n\nInstall it with:  pip install manim",
-            )
+        if self.env is None:
+            if messagebox.askyesno(
+                "Requirements needed",
+                "ManimDesk needs Python, Manim and LaTeX before it can make videos.\n\n"
+                "Install them now?",
+            ):
+                self.open_installer()
             return
         source = self.get_script()
         try:
@@ -304,7 +334,8 @@ class ManimDesk(tk.Tk):
             workspace=self.workspace,
         )
         try:
-            cmd = prepare_render(self.job)
+            self.workspace.mkdir(parents=True, exist_ok=True)
+            cmd = prepare_render(self.job, str(self.env.python))
         except OSError as e:
             messagebox.showerror("Can't write files", str(e))
             return
@@ -313,21 +344,22 @@ class ManimDesk(tk.Tk):
         self.log.delete("1.0", tk.END)
         self.log.configure(state=tk.DISABLED)
         self.log_write(f"Rendering {self.job.scene} at {w}x{h}, {fps} fps…\n\n")
-        if not latex_installed():
+        if not self.env.has_latex():
             self.log_write(
-                "Warning: LaTeX wasn't found. Tex, MathTex and axis numbers need it "
-                "(see the README).\n\n",
+                "Warning: LaTeX wasn't found. Tex, MathTex and axis numbers need it. "
+                "Use Install Requirements… to add it.\n\n",
                 "warn",
             )
 
         self.render_start = time.time()
         self.raw_output: list[str] = []
-        self.process = start_render(cmd, cwd=self.workspace)
+        self.process = start_render(cmd, cwd=self.workspace, extra_path=self.env.path_dirs())
         threading.Thread(target=self._read_output, args=(self.process,), daemon=True).start()
 
         self.render_btn.configure(state=tk.DISABLED)
         self.stop_btn.configure(state=tk.NORMAL)
         self.open_video_btn.configure(state=tk.DISABLED)
+        self.progress.pack(side=tk.LEFT, padx=6)
         self.progress.start(12)
         self.status_var.set("Rendering…")
 
@@ -355,6 +387,7 @@ class ManimDesk(tk.Tk):
     def _finished(self, code: int):
         self.process = None
         self.progress.stop()
+        self.progress.pack_forget()
         self.render_btn.configure(state=tk.NORMAL)
         self.stop_btn.configure(state=tk.DISABLED)
 
@@ -379,8 +412,41 @@ class ManimDesk(tk.Tk):
 
     def stop(self):
         if self.process:
-            self.process.terminate()
+            kill_tree(self.process)
             self.log_write("\nStopped by user.\n", "err")
+
+    # ---------- requirements ----------
+
+    @property
+    def workspace(self) -> Path:
+        """Scripts and cache live with the installed requirements, if there are any."""
+        if self.env and self.env.root:
+            return self.env.root
+        return default_workspace()
+
+    def _show_env(self):
+        if self.env is None:
+            self.env_var.set("✖ Not installed yet")
+            self.env_label.configure(foreground="#c0392b")
+        elif self.env.root:
+            latex = "" if self.env.has_latex() else " (no LaTeX)"
+            self.env_var.set(f"✔ Installed in {pretty_path(self.env.root)}{latex}")
+            self.env_label.configure(foreground="#2e7d32")
+        else:
+            self.env_var.set("✔ Using the Manim already installed in this Python")
+            self.env_label.configure(foreground="#2e7d32")
+
+    def open_installer(self):
+        if self.process:
+            messagebox.showinfo("Busy", "Wait for the current render to finish first.")
+            return
+        InstallerWindow(self, on_installed=self._installed, current=self.env)
+
+    def _installed(self, env: Environment):
+        self.env = env
+        self._show_env()
+        self.log_write(f"\n✔ Requirements installed in {pretty_path(env.root)}.\n", "ok")
+        self.status_var.set("Ready to render")
 
     # ---------- output ----------
 
@@ -400,7 +466,7 @@ class ManimDesk(tk.Tk):
         ):
             return
         if self.process:
-            self.process.terminate()
+            kill_tree(self.process)
         self.destroy()
 
 

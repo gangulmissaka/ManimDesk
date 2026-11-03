@@ -6,14 +6,14 @@ from __future__ import annotations
 
 import ast
 import configparser
-import importlib.util
 import os
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from .environment import NO_WINDOW, subprocess_env
 
 # label -> (landscape width, landscape height, fps)
 QUALITIES = {
@@ -24,11 +24,6 @@ QUALITIES = {
 ASPECTS = ["16:9 (landscape)", "9:16 (portrait)"]
 ALL_SCENES = "<All scenes>"
 SCRIPT_NAME = "manimdesk_scene.py"
-
-
-def default_workspace() -> Path:
-    """Folder for scripts, cache and videos. Override with MANIMDESK_HOME."""
-    return Path(os.environ.get("MANIMDESK_HOME") or Path.home() / "ManimDesk")
 
 
 def pretty_path(path: Path) -> str:
@@ -128,21 +123,13 @@ def write_render_config(job: RenderJob) -> None:
         cfg.write(f)
 
 
-def python_executable() -> str:
-    """The interpreter to run Manim with: python.exe even if we're under pythonw.exe."""
-    python = Path(sys.executable)
-    if python.name.lower() == "pythonw.exe" and python.with_name("python.exe").exists():
-        python = python.with_name("python.exe")
-    return str(python)
-
-
-def prepare_render(job: RenderJob) -> list[str]:
+def prepare_render(job: RenderJob, python: str) -> list[str]:
     """Write the script and config to the workspace and return the Manim command."""
     job.script_path.parent.mkdir(parents=True, exist_ok=True)
     job.script_path.write_text(job.script, encoding="utf-8")
     write_render_config(job)
     cmd = [
-        python_executable(), "-m", "manim", "render",
+        python, "-m", "manim", "render",
         "--config_file", str(job.config_path),
         "--progress_bar", "none",
         str(job.script_path),
@@ -151,20 +138,24 @@ def prepare_render(job: RenderJob) -> list[str]:
     return cmd
 
 
-def start_render(cmd: list[str], cwd: Path) -> subprocess.Popen:
+def start_render(cmd: list[str], cwd: Path, extra_path=()) -> subprocess.Popen:
+    """Start Manim. `extra_path` folders (e.g. the installed LaTeX) go first on PATH."""
     # A very wide COLUMNS stops Manim's rich logger wrapping each message
     # across several lines, so clean_log_line() sees whole records.
-    env = dict(os.environ, PYTHONWARNINGS="ignore", COLUMNS="1000", PYTHONIOENCODING="utf-8")
+    env = subprocess_env(
+        extra_path, PYTHONWARNINGS="ignore", COLUMNS="1000", PYTHONIOENCODING="utf-8"
+    )
     return subprocess.Popen(
         cmd,
         cwd=cwd,
         env=env,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        creationflags=NO_WINDOW,
     )
 
 
@@ -216,14 +207,6 @@ def new_videos(video_dir: Path, since: float) -> list[Path]:
         return []
     videos = [p for p in video_dir.glob("*.mp4") if p.stat().st_mtime >= since - 1]
     return sorted(videos, key=lambda p: p.stat().st_mtime)
-
-
-def manim_installed() -> bool:
-    return importlib.util.find_spec("manim") is not None
-
-
-def latex_installed() -> bool:
-    return shutil.which("latex") is not None
 
 
 def open_path(path: Path) -> None:

@@ -11,7 +11,8 @@ license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "gangulmissaka" }]
 requires-python = ">=3.11"
-dependencies = ["manim>=0.19"]
+# Manim, LaTeX etc. are installed by the app ("Install Requirements"), using uv.
+dependencies = ["uv>=0.5"]
 keywords = ["manim", "animation", "math", "physics", "education", "gui", "video"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -26,7 +27,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-science = ["scipy", "sympy", "matplotlib"]
+# Run Manim in the same Python as the app instead of installing requirements separately.
+manim = ["manim>=0.19", "scipy", "sympy", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/gangulmissaka/ManimDesk"

@@ -64,10 +64,10 @@ def test_prepare_render_writes_files_and_command(tmp_path):
     (tmp_path / "ws").mkdir()
     (tmp_path / "ws" / "manim.cfg").write_text("[CLI]\nbackground_color = #101010\n")
     job = make_job(tmp_path)
-    cmd = prepare_render(job)
+    cmd = prepare_render(job, "/env/python")
 
     assert job.script_path.read_text(encoding="utf-8") == SCRIPT
-    assert cmd[1:4] == ["-m", "manim", "render"]
+    assert cmd[:4] == ["/env/python", "-m", "manim", "render"]
     assert cmd[-2:] == [str(job.script_path), "A"]
 
     cfg = configparser.ConfigParser(interpolation=None)
@@ -81,7 +81,7 @@ def test_prepare_render_writes_files_and_command(tmp_path):
 
 
 def test_prepare_render_all_scenes(tmp_path):
-    cmd = prepare_render(make_job(tmp_path, scene=ALL_SCENES, width=1920, height=1080))
+    cmd = prepare_render(make_job(tmp_path, scene=ALL_SCENES, width=1920, height=1080), "python")
     assert cmd[-1] == "-a"
 
 
